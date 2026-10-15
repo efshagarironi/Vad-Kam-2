@@ -774,9 +774,9 @@ jobs:
           public class MainActivity extends Activity {
               static final int HOME = 0, SETTINGS = 1, BG = 2, BEHAVIOR = 3, LANG = 4, PICKER = 5,
                       DOCK = 6, ICON = 8, MOCK = 9, FOLDER = 10, BACKUP = 11, RESTORE = 12,
-                      FONT = 13, FGRP = 14, FPICK = 15, DOCKBG = 16, HPAGE = 17, HFBG = 18, MBG = 19;
+                      FONT = 13, FGRP = 14, FPICK = 15, DOCKBG = 16, HPAGE = 17, HFBG = 18, MBG = 19, TBG = 20;
               static final int DLG = 0xFFEEEEEE;
-              static final int REQ_IMG = 77, REQ_FIMG = 78, REQ_MIMG = 79;
+              static final int REQ_IMG = 77, REQ_FIMG = 78, REQ_MIMG = 79, REQ_TIMG = 80;
 
               static class AppItem { String label, pkg; Drawable icon; }
 
@@ -821,17 +821,13 @@ jobs:
               }
 
               // tab that is part of the open folder: round on top, melted into the folder at the bottom,
-              // edges (top, left, right) styled like the immersive folder: same radius, thin 0x33FFFFFF line.
-              // When "blur" is set the tab is frosted glass: a blurred copy of the screen background is drawn inside it.
+              // edges (top, left, right) styled like the immersive folder: same radius, thin 0x33FFFFFF line
               static class TabDrawable extends Drawable {
                   Paint pt = new Paint(Paint.ANTI_ALIAS_FLAG);
                   Paint ln = new Paint(Paint.ANTI_ALIAS_FLAG);
                   Path ph = new Path();
                   Path ol = new Path();
-                  Rect dst = new Rect();
                   float r, fl, sw;
-                  Bitmap blur;
-                  int scrW, scrH;
                   TabDrawable(int color, int line, float r, float fl, float sw) {
                       pt.setColor(color);
                       ln.setStyle(Paint.Style.STROKE);
@@ -856,15 +852,6 @@ jobs:
                       ph.lineTo(R, B - fl);
                       ph.quadTo(R, B, R + fl, B);
                       ph.close();
-                      if (blur != null && getCallback() instanceof View) {
-                          int[] l = new int[2];
-                          ((View) getCallback()).getLocationOnScreen(l);
-                          dst.set(-l[0], -l[1], -l[0] + scrW, -l[1] + scrH);
-                          c.save();
-                          c.clipPath(ph);
-                          c.drawBitmap(blur, null, dst, null);
-                          c.restore();
-                      }
                       c.drawPath(ph, pt);
                       float h = sw / 2f;
                       float Lo = L + h, Ro = R - h, To = T + h;
@@ -1002,7 +989,7 @@ jobs:
               List<View> folderCtl = new ArrayList<>();
               Map<TextView, Float> baseSz = new WeakHashMap<>();
               Bitmap bgBmp, bgSrc;
-              Bitmap mbgBmp, mbgSrc, hfSrc;
+              Bitmap mbgBmp, mbgSrc, hfSrc, tbSrc;
               Consumer<Float> folderApply;
               String fGrp = "s", fLang = "fa";
               Map<String, Typeface> faceCache = new HashMap<>();
@@ -1090,6 +1077,7 @@ jobs:
               }
 
               // touching anything outside the open folder closes the folder
+              // (a closed folder can be touched: the new folder then replaces the open one)
               @Override
               public boolean dispatchTouchEvent(MotionEvent ev) {
                   if (page == HOME && openFolder != null && ev.getActionMasked() == MotionEvent.ACTION_DOWN) {
@@ -1107,6 +1095,15 @@ jobs:
                       if (!inside) {
                           for (View cv : folderCtl) {
                               if (hit(cv, ev)) { inside = true; break; }
+                          }
+                      }
+                      if (!inside && !immersive) {
+                          for (Map.Entry<String, List<View>> en : cells.entrySet()) {
+                              if (!en.getKey().startsWith("folder:")) continue;
+                              for (View cv2 : en.getValue()) {
+                                  if (hit(cv2, ev)) { inside = true; break; }
+                              }
+                              if (inside) break;
                           }
                       }
                       if (!inside) {
@@ -1186,7 +1183,7 @@ jobs:
                   } else if (page == HFBG) {
                       page = HPAGE;
                       show();
-                  } else if (page == MBG) {
+                  } else if (page == MBG || page == TBG) {
                       page = HOME;
                       show();
                   } else {
@@ -1310,6 +1307,7 @@ jobs:
 
               void loadFrameImage() {
                   hfSrc = loadSrc("hf", "hf_src.jpg");
+                  tbSrc = loadSrc("tb", "tb_src.jpg");
               }
 
               // page background: transparent when a picture is used (settings menu pages get theirs in show())
@@ -1336,7 +1334,7 @@ jobs:
               @Override
               protected void onActivityResult(int rc, int res, Intent data) {
                   super.onActivityResult(rc, res, data);
-                  if ((rc != REQ_IMG && rc != REQ_FIMG && rc != REQ_MIMG) || res != RESULT_OK
+                  if ((rc != REQ_IMG && rc != REQ_FIMG && rc != REQ_MIMG && rc != REQ_TIMG) || res != RESULT_OK
                           || data == null || data.getData() == null) return;
                   try {
                       Uri u = data.getData();
@@ -1353,7 +1351,8 @@ jobs:
                       Bitmap src = BitmapFactory.decodeStream(in2, null, o2);
                       in2.close();
                       if (src == null) throw new Exception("decode");
-                      String fn = rc == REQ_IMG ? "bg_src.jpg" : (rc == REQ_FIMG ? "hf_src.jpg" : "menu_src.jpg");
+                      String fn = rc == REQ_IMG ? "bg_src.jpg" : (rc == REQ_FIMG ? "hf_src.jpg"
+                              : (rc == REQ_TIMG ? "tb_src.jpg" : "menu_src.jpg"));
                       FileOutputStream fo = new FileOutputStream(new File(getFilesDir(), fn));
                       src.compress(Bitmap.CompressFormat.JPEG, 92, fo);
                       fo.close();
@@ -1369,6 +1368,11 @@ jobs:
                                   .remove("hfPy").remove("hfFade").apply();
                           hfSrc = src;
                           page = HFBG;
+                      } else if (rc == REQ_TIMG) {
+                          sp.edit().putBoolean("tbImg", true).remove("tbZoom").remove("tbPx")
+                                  .remove("tbPy").remove("tbFade").apply();
+                          tbSrc = src;
+                          page = TBG;
                       } else {
                           sp.edit().putBoolean("mImg", true).remove("mZoom").remove("mPx")
                                   .remove("mPy").remove("mFade").apply();
@@ -1386,17 +1390,12 @@ jobs:
 
               // ================= glass / rounded boxes =================
               static final int BOX_R = 28;
-              Map<Integer, Bitmap> blurHome = new HashMap<>(), blurMenu = new HashMap<>();
-              Bitmap blurHomeSrc, blurMenuSrc;
+              Bitmap mbgBlur, mbgBlurSrc;
               View menuRoot;
 
               boolean glass() { return sp.getBoolean("glass", false); }
 
-              // blur amount of all boxes (0 to 100)
-              int glassLvl() { return sp.getInt("glassLvl", 20); }
-
-              // frosted glass box: a blurred copy of the background picture, a tint, a sheen and a thin edge.
-              // screen = true: the picture is the whole screen (home page); false: the settings page picture
+              // frosted glass box: a very lightly blurred copy of the menu picture, a tint, a sheen and a thin edge
               class Glass extends Drawable {
                   Paint pt = new Paint(Paint.ANTI_ALIAS_FLAG);
                   Path cl = new Path();
@@ -1405,12 +1404,10 @@ jobs:
                   int tint;
                   float r;
                   Bitmap blur;
-                  boolean screen;
-                  Glass(int tint, float r, Bitmap blur, boolean screen) {
+                  Glass(int tint, float r, Bitmap blur) {
                       this.tint = tint;
                       this.r = r;
                       this.blur = blur;
-                      this.screen = screen;
                   }
                   @Override
                   public void draw(Canvas c) {
@@ -1423,21 +1420,13 @@ jobs:
                       c.save();
                       c.clipPath(cl);
                       Callback cb = getCallback();
-                      if (blur != null && cb instanceof View) {
-                          View cv = (View) cb;
-                          int[] l = new int[2];
-                          cv.getLocationOnScreen(l);
-                          if (screen) {
-                              DisplayMetrics dm = getResources().getDisplayMetrics();
-                              dst.set(-l[0], -l[1], dm.widthPixels - l[0], dm.heightPixels - l[1]);
-                              c.drawBitmap(blur, null, dst, null);
-                          } else if (menuRoot != null && menuRoot.getWidth() > 0) {
-                              int[] a = new int[2];
-                              menuRoot.getLocationOnScreen(a);
-                              dst.set(a[0] - l[0], a[1] - l[1], a[0] - l[0] + menuRoot.getWidth(),
-                                      a[1] - l[1] + menuRoot.getHeight());
-                              c.drawBitmap(blur, null, dst, null);
-                          }
+                      if (blur != null && menuRoot != null && menuRoot.getWidth() > 0 && cb instanceof View) {
+                          int[] a = new int[2], l = new int[2];
+                          menuRoot.getLocationOnScreen(a);
+                          ((View) cb).getLocationOnScreen(l);
+                          dst.set(a[0] - l[0], a[1] - l[1], a[0] - l[0] + menuRoot.getWidth(),
+                                  a[1] - l[1] + menuRoot.getHeight());
+                          c.drawBitmap(blur, null, dst, null);
                       }
                       pt.setStyle(Paint.Style.FILL);
                       pt.setShader(null);
@@ -1463,51 +1452,19 @@ jobs:
                   @Override public int getOpacity() { return PixelFormat.TRANSLUCENT; }
               }
 
-              // small blurred copy of a picture; lvl 0 = no blur, 100 = strong blur
-              Bitmap makeBlur(Bitmap s, int lvl) {
+              // small blurred copy of a picture (very low blur)
+              Bitmap makeBlur(Bitmap s) {
                   try {
                       int bw = Math.max(2, s.getWidth() / 4), bh = Math.max(2, s.getHeight() / 4);
                       Bitmap b = Bitmap.createScaledBitmap(s, bw, bh, true);
-                      int r = Math.round(lvl / 100f * 12f);
-                      if (r <= 0) return b;
                       int[] px = new int[bw * bh];
                       b.getPixels(px, 0, bw, 0, 0, bw, bh);
-                      boxBlur(px, bw, bh, r);
-                      boxBlur(px, bw, bh, r);
+                      boxBlur(px, bw, bh, 1);
+                      boxBlur(px, bw, bh, 1);
                       Bitmap o = Bitmap.createBitmap(bw, bh, Bitmap.Config.ARGB_8888);
                       o.setPixels(px, 0, bw, 0, 0, bw, bh);
                       return o;
                   } catch (Throwable e) { return null; }
-              }
-
-              // blurred home background (cached per level)
-              Bitmap homeBlur(int lvl) {
-                  if (bgBmp == null) return null;
-                  if (blurHomeSrc != bgBmp) { blurHome.clear(); blurHomeSrc = bgBmp; }
-                  Bitmap b = blurHome.get(lvl);
-                  if (b == null) {
-                      b = makeBlur(bgBmp, lvl);
-                      if (b != null) blurHome.put(lvl, b);
-                  }
-                  return b;
-              }
-
-              // blurred settings menu background (cached per level)
-              Bitmap menuBlur() {
-                  if (mbgBmp == null) return null;
-                  if (blurMenuSrc != mbgBmp) { blurMenu.clear(); blurMenuSrc = mbgBmp; }
-                  int lvl = glassLvl();
-                  Bitmap b = blurMenu.get(lvl);
-                  if (b == null) {
-                      b = makeBlur(mbgBmp, lvl);
-                      if (b != null) blurMenu.put(lvl, b);
-                  }
-                  return b;
-              }
-
-              // glass drawable for boxes that sit on the home page
-              Drawable homeGlass(float rPx, int lvl) {
-                  return new Glass(light() ? 0x44FFFFFF : 0x26FFFFFF, rPx, homeBlur(lvl), true);
               }
 
               // background of every settings box: plain rounded box, or glass when the option is on
@@ -1518,9 +1475,15 @@ jobs:
                       g.setColor(plain);
                       return g;
                   }
-                  boolean mp = menuPage();
-                  return new Glass(light() ? 0x44FFFFFF : 0x26FFFFFF, dp(rDp),
-                          mp ? menuBlur() : homeBlur(glassLvl()), !mp);
+                  Bitmap bl = null;
+                  if (menuPage() && mbgBmp != null) {
+                      if (mbgBlur == null || mbgBlurSrc != mbgBmp) {
+                          mbgBlur = makeBlur(mbgBmp);
+                          mbgBlurSrc = mbgBmp;
+                      }
+                      bl = mbgBlur;
+                  }
+                  return new Glass(light() ? 0x44FFFFFF : 0x26FFFFFF, dp(rDp), bl);
               }
 
               void invalidateGlass(View v) {
@@ -1769,13 +1732,10 @@ jobs:
                   return new FrameLayout.LayoutParams(dp(wDp), dp(hDp), g | Gravity.CENTER_VERTICAL);
               }
 
-              // circle, a box like the counters, or frosted glass when "header icons glass" is on
+              // circle, or a box like the counters when "header icons shape" is on
               void styleTop(ImageView v, int fg) {
                   v.setColorFilter(sp.getInt("top_ic", fg));
-                  boolean box = sp.getBoolean("topIconBox", false);
-                  if (sp.getBoolean("glassHeadIcons", false)) {
-                      v.setBackground(homeGlass(box ? dp(16) : dp(200), glassLvl()));
-                  } else if (box) {
+                  if (sp.getBoolean("topIconBox", false)) {
                       int c = sp.contains("top_ibg") ? sp.getInt("top_ibg", 0x33FFFFFF) : sp.getInt("box_bg", 0x33FFFFFF);
                       v.setBackground(rr(c, dp(16)));
                   } else {
@@ -1902,16 +1862,6 @@ jobs:
                   box.addView(toggleRow(0xFF26C6DA, "◇", t("کادر شیشه‌ای", "Glass boxes"),
                           t("کادرهای تنظیمات شیشه‌ای با بلور بسیار کم می‌شوند", "Settings boxes look like glass with a very light blur"),
                           "glass", false, DLG));
-                  // glass of the home page header
-                  box.addView(toggleRow(0xFF00ACC1, "◈", t("کادر شیشه‌ای سربرگ", "Header glass frame"),
-                          t("کادر بالای صفحه اصلی شیشه‌ای بلوری می‌شود", "The frame at the top of the home page becomes frosted glass"),
-                          "glassHead", false, DLG));
-                  box.addView(toggleRow(0xFF26A69A, "◈", t("کادر شیشه‌ای آیکون‌های سربرگ", "Header icons glass boxes"),
-                          t("آیکون‌های همبرگری و بعلاوه و کادرهای شمارش شیشه‌ای بلوری می‌شوند",
-                                  "Hamburger, plus and the counters become frosted glass"),
-                          "glassHeadIcons", false, DLG));
-                  box.addView(accordionRow(0xFF42A5F5, "💧", t("مقدار بلوری کادرها", "Boxes blur amount"),
-                          "glassLvl", 0, 100, 20, "%", DLG, null));
                   box.addView(toggleRow(0xFFEF5350, "◻", t("شکل آیکون‌های سربرگ", "Header icons shape"),
                           t("آیکون‌ها بدون دایره و داخل کادر مثل کادر شمارش", "Icons sit in boxes like the counters, not circles"),
                           "topIconBox", false, DLG));
@@ -1919,6 +1869,13 @@ jobs:
                   box.addView(toggleRow(0xFF7E57C2, "▣", t("کادر تنظیمات", "Settings frame"),
                           t("کادری دور آیکون‌ها و کادرهای شمارش", "A frame around the icons and the counters"),
                           "topBoxOn", false, DLG));
+                  // color, transparency, picture and color code of the frame at the top of the home page
+                  box.addView(row(0xFFFF7043, "🖌", t("رنگ کادر تنظیمات", "Settings frame color"),
+                          t("رنگ، شفافیت، عکس و کد رنگ کادر بالای صفحه", "Color, transparency, picture and color code of the top frame"),
+                          0, DLG, x -> {
+                      page = TBG;
+                      if (dlg[0] != null) dlg[0].dismiss();
+                  }));
                   box.addView(accordionGroup(0xFF8BC34A, "📏", t("سایز کادر بالا", "Top frame size"), DLG,
                           slider(t("طول", "Length"), "topBoxW", 40, 100, 100, "%", DLG, null),
                           slider(t("عرض", "Width"), "topBoxH", 44, 120, 56, " dp", DLG, null)));
@@ -2313,6 +2270,7 @@ jobs:
                   else if (page == BG) v = bgPage(fg);
                   else if (page == HFBG) v = bgPageG(2, fg);
                   else if (page == MBG) v = bgPageG(1, fg);
+                  else if (page == TBG) v = bgPageG(3, fg);
                   else if (page == BEHAVIOR) v = behaviorPage(fg);
                   else if (page == DOCK) v = dockPageView(fg);
                   else if (page == DOCKBG) v = dockBgPage(fg);
@@ -2368,14 +2326,12 @@ jobs:
                   topBoxV = null;
                   LinearLayout.LayoutParams hlp = new LinearLayout.LayoutParams(-1, -2);
                   if (sp.getBoolean("topBoxOn", false)) {
-                      // frame around the hamburger, the plus and the counters (its length and width are adjustable)
+                      // frame around the hamburger, the plus and the counters (color, picture, length and width are adjustable)
                       View tb = new View(this);
-                      if (sp.getBoolean("glassHead", false)) {
-                          tb.setBackground(homeGlass(dp(22), glassLvl()));
-                      } else {
-                          tb.setBackground(new FrameDrawable(sp.getInt("topBoxBg", 0x6628282C), false,
-                                  dp(22), dp(3), null, 1f, 0.5f, 0.5f, 0));
-                      }
+                      tb.setBackground(new FrameDrawable(sp.getInt("topBoxBg", 0x6628282C), false,
+                              dp(22), dp(3), tbSrc, sp.getInt("tbZoom", 100) / 100f,
+                              sp.getInt("tbPx", 50) / 100f, sp.getInt("tbPy", 50) / 100f,
+                              sp.getInt("tbFade", 0)));
                       head.addView(tb, new FrameLayout.LayoutParams(-1, -1));
                       topBoxV = tb;
                       int availW = getResources().getDisplayMetrics().widthPixels - dp(24);
@@ -2414,14 +2370,9 @@ jobs:
                   final boolean framed = sp.getBoolean("hfOn", false);
                   if (framed) {
                       frameV = new View(this);
-                      if (sp.getBoolean("hfGlass", false)) {
-                          // frosted glass frame with its own blur amount
-                          frameV.setBackground(homeGlass(dp(26), sp.getInt("hfLvl", 30)));
-                      } else {
-                          frameV.setBackground(new FrameDrawable(sp.getInt("hfBg", 0x6628282C), false,
-                                  dp(26), dp(3), hfSrc, sp.getInt("hfZoom", 100) / 100f, sp.getInt("hfPx", 50) / 100f,
-                                  sp.getInt("hfPy", 50) / 100f, sp.getInt("hfFade", 0)));
-                      }
+                      frameV.setBackground(new FrameDrawable(sp.getInt("hfBg", 0x6628282C), sp.getBoolean("hf3d", false),
+                              dp(26), dp(3), hfSrc, sp.getInt("hfZoom", 100) / 100f, sp.getInt("hfPx", 50) / 100f,
+                              sp.getInt("hfPy", 50) / 100f, sp.getInt("hfFade", 0)));
                       FrameLayout.LayoutParams fpp = new FrameLayout.LayoutParams(-1, -1);
                       if (dockTop) fpp.topMargin = dockReserve(); else fpp.bottomMargin = dockReserve();
                       mid.addView(frameV, fpp);
@@ -2546,14 +2497,10 @@ jobs:
                   tv.setTextSize(sc(sp.getInt("box_ts", 18)));
                   tv.setTextColor(sp.getInt("box_tc", fg));
                   tv.setTypeface(weightFace(sp.getInt("box_tw", 3)));
-                  if (sp.getBoolean("glassHeadIcons", false)) {
-                      tv.setBackground(homeGlass(dp(16), glassLvl()));
-                  } else {
-                      GradientDrawable g = new GradientDrawable();
-                      g.setCornerRadius(dp(16));
-                      g.setColor(sp.getInt("box_bg", 0x33FFFFFF));
-                      tv.setBackground(g);
-                  }
+                  GradientDrawable g = new GradientDrawable();
+                  g.setCornerRadius(dp(16));
+                  g.setColor(sp.getInt("box_bg", 0x33FFFFFF));
+                  tv.setBackground(g);
                   LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                           dp(sc(sp.getInt("box_w", 62))), dp(sc(sp.getInt("box_h", 40))));
                   lp.setMargins(dp(2), 0, dp(2), 0);
@@ -2600,6 +2547,8 @@ jobs:
                           .setPositiveButton(t("تأیید", "OK"), null)
                           .setOnDismissListener(d -> show()).show();
               }
+          EOF
+          cat >> app/src/main/java/com/mylauncher/MainActivity.java <<'EOF'
 
               View selectionBar(int fg) {
                   LinearLayout b = new LinearLayout(this);
@@ -3135,8 +3084,10 @@ jobs:
                   styleSel(fc, sel.contains("folder:" + f.id));
 
                   fc.setOnClickListener(w -> {
-                      if (sel.isEmpty()) openFolderFrom(box, f.id, false);
-                      else toggleSel("folder:" + f.id);
+                      if (sel.isEmpty()) {
+                          if (f.id.equals(openFolder)) closeFolder();
+                          else openFolderFrom(box, f.id, false);
+                      } else toggleSel("folder:" + f.id);
                   });
                   fc.setOnLongClickListener(w -> {
                       selHold("folder:" + f.id, false, w, "folder:" + f.id);
@@ -3155,15 +3106,20 @@ jobs:
                   }
                   snapPanel = null;
                   snapTabs = null;
-                  // switching from one open dock folder to another: keep a picture of the old one
-                  if (openFolder != null && !openFolder.equals(id) && immersive && fromDock && nowDock
-                          && curPanel != null && ovLayer != null && curPanel.getWidth() > 0 && ovLayer.getWidth() > 0) {
+                  // switching from one open folder to another (popup or immersive): keep a picture of the old one
+                  if (openFolder != null && !openFolder.equals(id) && curPanel != null && curPanel.getWidth() > 0) {
                       try {
-                          snapPanel = Bitmap.createBitmap(curPanel.getWidth(), curPanel.getHeight(), Bitmap.Config.ARGB_8888);
-                          curPanel.draw(new Canvas(snapPanel));
-                          snapTabs = Bitmap.createBitmap(ovLayer.getWidth(), ovLayer.getHeight(), Bitmap.Config.ARGB_8888);
-                          ovLayer.draw(new Canvas(snapTabs));
-                          prevCx = openCx;
+                          if (!immersive) {
+                              // popup folder: only the panel is pictured
+                              snapPanel = Bitmap.createBitmap(curPanel.getWidth(), curPanel.getHeight(), Bitmap.Config.ARGB_8888);
+                              curPanel.draw(new Canvas(snapPanel));
+                          } else if (fromDock && nowDock && ovLayer != null && curPanel.getHeight() > 0 && ovLayer.getWidth() > 0) {
+                              snapPanel = Bitmap.createBitmap(curPanel.getWidth(), curPanel.getHeight(), Bitmap.Config.ARGB_8888);
+                              curPanel.draw(new Canvas(snapPanel));
+                              snapTabs = Bitmap.createBitmap(ovLayer.getWidth(), ovLayer.getHeight(), Bitmap.Config.ARGB_8888);
+                              ovLayer.draw(new Canvas(snapTabs));
+                              prevCx = openCx;
+                          }
                       } catch (Throwable e) {
                           snapPanel = null;
                           snapTabs = null;
@@ -3717,8 +3673,8 @@ jobs:
                   // animation: on = the grow animation plays every time; off = it plays once, then crossfade
                   final boolean animOn = sp.getBoolean("fpAnim", true);
                   sb.addView(row(0xFFEC407A, "✨", t("انیمیشن", "Animation"),
-                          t("خاموش: انیمیشن فقط برای باز شدن اولین پوشه فراگیر، جایگزینی با Crossfade",
-                                  "Off: grow animation only for the first immersive folder, then crossfade"),
+                          t("خاموش: انیمیشن فقط برای باز شدن اولین پوشه، جایگزینی پوشه‌ها با Crossfade",
+                                  "Off: grow animation only for the first folder, then crossfade"),
                           animOn ? 3 : 2, fg, w -> {
                       sp.edit().putBoolean("fpAnim", !animOn).apply();
                       show();
@@ -3738,11 +3694,10 @@ jobs:
                       sp.edit().putBoolean("fpCloseOnLaunch", !closeOnLaunch).apply();
                       show();
                   }));
-                  // now works for the popup and the immersive folder, in the home page and in the dock
                   final boolean hideSmall = sp.getBoolean("fpHideSmall", true);
                   sb.addView(row(0xFF00897B, "👻", t("محو پوشه کوچک", "Hide small folder"),
-                          t("پوشه بسته و اسمش هنگام باز بودن پوشه (پاپ آپ و فراگیر) محو می‌شوند",
-                                  "Closed folder and its name fade while the folder (popup or immersive) is open"),
+                          t("پوشه بسته و اسمش هنگام باز بودن (پاپ آپ و فراگیر) محو می‌شوند",
+                                  "Closed folder and its name fade while open (popup and immersive)"),
                           hideSmall ? 3 : 2, fg, w -> {
                       sp.edit().putBoolean("fpHideSmall", !hideSmall).apply();
                       show();
@@ -3754,17 +3709,6 @@ jobs:
                   sb.addView(accordionRow(0xFF9C27B0, "💧", t("شفافیت پوشه", "Folder opacity"), "fpAlpha", 10, 100, 80, "%", fg, rs));
                   sb.addView(accordionRow(0xFF607D8B, "🌑", t("مات", "Fade"), "fpDim", 0, 98, 25, "%", fg, rs));
                   sb.addView(accordionRow(0xFF7E57C2, "📷", t("بلور", "Blur"), "fpBlur", 0, 100, 0, "%", fg, rs));
-                  // frosted glass folder (immersive panel, popup panel and their header tabs)
-                  final boolean fGlass = sp.getBoolean("fpGlass", false);
-                  sb.addView(row(0xFF26C6DA, "◇", t("کادر بلوری", "Glass box"),
-                          t("کادر پوشه فراگیر و پاپ آپ همراه سربرگ شیشه‌ای بلوری می‌شود",
-                                  "Immersive and popup folder boxes, with their header, become frosted glass"),
-                          fGlass ? 3 : 2, fg, w -> {
-                      sp.edit().putBoolean("fpGlass", !fGlass).apply();
-                      show();
-                  }));
-                  sb.addView(accordionRow(0xFF42A5F5, "💧", t("مقدار بلوری کادر", "Glass blur amount"),
-                          "fpGlassLvl", 0, 100, 30, "%", fg, rs));
                   sb.addView(accordionRow(0xFF00CCD6, "📱", t("اندازه آیکون‌ها", "Icon size"), "fpIcon", 24, 72, 40, " dp", fg, rs));
                   sb.addView(accordionGroup(0xFF8D6E63, "🔠", t("سایز متن", "Text size"), fg,
                           slider(t("بالای پوشه", "Folder top"), "fpTsTop", 8, 30, 14, " sp", fg, rs),
@@ -3828,25 +3772,11 @@ jobs:
                   return (f.color & 0x00FFFFFF) | ((sp.getInt("fpAlpha", 80) * 255 / 100) << 24);
               }
 
-              // tint of the glass folder: the folder color, very light
-              int glassTint(Item f) {
-                  return (f.color & 0x00FFFFFF) | 0x30000000;
-              }
-
               // same color, opacity, corner radius and thin edge line as the open folder panel;
-              // with the "Boxes" option on there is no box at all (icons keep their place);
-              // with the glass option the tab is frosted glass too
+              // with the "Boxes" option on there is no box at all (icons keep their place)
               Drawable tabBg(Item f) {
                   if (sp.getBoolean("fpNoBox", false)) return null;
-                  TabDrawable td = new TabDrawable(panelColor(f), 0x33FFFFFF, dp(26), dp(9), Math.max(1, dp(1)));
-                  if (sp.getBoolean("fpGlass", false)) {
-                      DisplayMetrics dm = getResources().getDisplayMetrics();
-                      td.pt.setColor(glassTint(f));
-                      td.blur = homeBlur(sp.getInt("fpGlassLvl", 30));
-                      td.scrW = dm.widthPixels;
-                      td.scrH = dm.heightPixels;
-                  }
-                  return td;
+                  return new TabDrawable(panelColor(f), 0x33FFFFFF, dp(26), dp(9), Math.max(1, dp(1)));
               }
 
               // very thin line under the header of the popup folder, in a lighter shade of the folder color
@@ -3952,13 +3882,12 @@ jobs:
                   final Bitmap sPanel = snapPanel, sTabs = snapTabs;
                   snapPanel = null;
                   snapTabs = null;
-                  final boolean switching = full && anim && sPanel != null && sTabs != null && ov != null;
-                  // animation option off: replacing one immersive folder by another is a smooth crossfade
+                  // replacing one open folder by another (popup or immersive): the old one stays as a picture and fades out
+                  final boolean switching = anim && sPanel != null && (!full || (sTabs != null && ov != null));
+                  // animation option off: replacing one folder by another is a smooth crossfade
                   final boolean xfade = switching && !sp.getBoolean("fpAnim", true);
-                  // "hide small folder" fades the closed folder in popup and immersive mode;
-                  // the neck to the dock folder is only drawn when the closed folder stays visible
-                  final boolean hideSmallOn = sp.getBoolean("fpHideSmall", true);
-                  final boolean bridgeOn = full && fromDock && !hideSmallOn;
+                  // the neck between the open folder and the closed one in the dock only shows when the closed one stays visible
+                  final boolean bridgeOn = full && fromDock && !sp.getBoolean("fpHideSmall", true);
                   final float prevCxF = prevCx;
                   final boolean[] opening = {anim};
                   DisplayMetrics dm = getResources().getDisplayMetrics();
@@ -3977,10 +3906,7 @@ jobs:
                   pg.setCornerRadius(dp(26));
                   pg.setColor(panelColor(f));
                   pg.setStroke(dp(1), 0x33FFFFFF);
-                  // frosted glass panel (own blur amount), used instead of the plain panel
-                  final Glass glassBg = sp.getBoolean("fpGlass", false)
-                          ? new Glass(glassTint(f), dp(26), homeBlur(sp.getInt("fpGlassLvl", 30)), true) : null;
-                  panel.setBackground(glassBg != null ? (Drawable) glassBg : pg);
+                  panel.setBackground(pg);
                   panel.setPadding(dp(12), dp(8), dp(12), dp(12));
                   panel.setClickable(true);
                   curPanel = panel;
@@ -3994,7 +3920,7 @@ jobs:
                   final int gw = 2 * btnSz + dp(8) + 2 * fl;
                   final LinearLayout grp = new LinearLayout(this);
                   final ImageView gTabs;
-                  if (switching) {
+                  if (switching && full) {
                       gTabs = new ImageView(this);
                       gTabs.setImageBitmap(sTabs);
                       gTabs.setScaleType(ImageView.ScaleType.FIT_XY);
@@ -4101,7 +4027,8 @@ jobs:
                       gPanel = new ImageView(this);
                       gPanel.setImageBitmap(sPanel);
                       gPanel.setScaleType(ImageView.ScaleType.FIT_XY);
-                      wrap.addView(gPanel, new FrameLayout.LayoutParams(-1, -1, Gravity.CENTER));
+                      wrap.addView(gPanel, full ? new FrameLayout.LayoutParams(-1, -1, Gravity.CENTER)
+                              : new FrameLayout.LayoutParams(pw, ph, Gravity.CENTER));
                   } else {
                       gPanel = null;
                   }
@@ -4109,7 +4036,7 @@ jobs:
                           : new FrameLayout.LayoutParams(pw, ph, Gravity.CENTER));
                   final FrameLayout ghost = folderBox(f, openW);
                   ghost.setAlpha(0f);
-                  final boolean fadeSmall = hideSmallOn;
+                  final boolean fadeSmall = sp.getBoolean("fpHideSmall", true) && !bridgeOn;
                   final int blurLvl = sp.getInt("fpBlur", 0);
                   final int bc1 = panelColor(f);
                   final int bc2 = f.color == 0x66FFFFFF ? 0x3A28282C : f.color;
@@ -4167,7 +4094,7 @@ jobs:
                           ctls.add(cn);
                           ctls.add(cg);
                       }
-                      if (glassBg == null && Build.VERSION.SDK_INT < 31 && blurLvl > 0 && panel.getWidth() > 0 && panel.getHeight() > 0) {
+                      if (Build.VERSION.SDK_INT < 31 && blurLvl > 0 && panel.getWidth() > 0 && panel.getHeight() > 0) {
                           try {
                               Bitmap bb = blurBackdrop(wl[0] + panel.getLeft(), wl[1] + panel.getTop(),
                                       panel.getWidth(), panel.getHeight(), blurLvl, dimEnd);
@@ -4205,10 +4132,6 @@ jobs:
                           panel.setTranslationY(tyv);
                           rad[0] = xf ? rEnd : r0 + (rEnd - r0) * p;
                           pg.setCornerRadius(rad[0]);
-                          if (glassBg != null) {
-                              glassBg.r = rad[0];
-                              panel.invalidate();
-                          }
                           if (blurLvl > 0) panel.invalidateOutline();
                           float ca = xf ? 1f : Math.max(0f, Math.min(1f, (p - 0.3f) / 0.7f));
                           for (int i = 0; i < panel.getChildCount(); i++) panel.getChildAt(i).setAlpha(ca);
@@ -4294,8 +4217,6 @@ jobs:
                               show();
                           }).setNegativeButton(t("لغو", "Cancel"), null).show();
               }
-          EOF
-          cat >> app/src/main/java/com/mylauncher/MainActivity.java <<'EOF'
 
               // ================= dock =================
               View buildDock() {
@@ -4370,7 +4291,7 @@ jobs:
                                       fbx.setLayoutParams(new LinearLayout.LayoutParams(szFolder, szFolder));
                                       iv = fbx;
                                       if (showFolderNames) nm = folderTitle(f);
-                                      // now also while the folder is open in immersive mode
+                                      // the closed folder and its name fade while the folder is open (popup and immersive)
                                       isOpenF = f.id.equals(openFolder) && fadeSmall;
                                       if (isOpenF) fbx.setVisibility(View.INVISIBLE);
                                       slot.setOnClickListener(w -> {
@@ -4525,9 +4446,45 @@ jobs:
               }
 
               // ================= launching =================
+              // screen rectangle of the home page frame (or of the icon grid when the frame is off)
+              Rect frameRect() {
+                  View v = (frameV != null && frameV.getWidth() > 0) ? frameV : gridView;
+                  if (v == null || v.getWidth() == 0 || v.getHeight() == 0) return null;
+                  int[] l = new int[2];
+                  v.getLocationOnScreen(l);
+                  return new Rect(l[0], l[1], l[0] + v.getWidth(), l[1] + v.getHeight());
+              }
+
+              // "Run apps" option: the app opens as a window exactly over the frame, growing from its center.
+              // Android only keeps the window inside the frame when the phone has free-form windows on;
+              // otherwise the app opens normally and the launcher stays behind it.
+              void launchInFrame(Intent li) {
+                  try {
+                      Rect r = frameRect();
+                      ActivityOptions o;
+                      if (r != null && container != null && container.getWidth() > 0) {
+                          int[] cl = new int[2];
+                          container.getLocationOnScreen(cl);
+                          o = ActivityOptions.makeScaleUpAnimation(container,
+                                  r.centerX() - cl[0], r.centerY() - cl[1], 1, 1);
+                          o.setLaunchBounds(r);
+                      } else {
+                          o = ActivityOptions.makeBasic();
+                      }
+                      startActivity(li, o.toBundle());
+                  } catch (Throwable e) {
+                      try { startActivity(li); } catch (Throwable e2) { }
+                  }
+              }
+
               void launchApp(String pkg) {
                   Intent li = getPackageManager().getLaunchIntentForPackage(pkg);
                   if (li == null) return;
+                  if (sp.getBoolean("hfRun", false)) {
+                      // the launcher always stays open in this mode
+                      launchInFrame(li);
+                      return;
+                  }
                   startActivity(li);
                   int mode = sp.getInt("mode", 0);
                   if (mode == 0) {
@@ -4542,6 +4499,8 @@ jobs:
                       }
                   }
               }
+          EOF
+          cat >> app/src/main/java/com/mylauncher/MainActivity.java <<'EOF'
 
               // ================= settings =================
               ScrollView wrapScroll(View content) {
@@ -4584,7 +4543,7 @@ jobs:
                   return wrapScroll(r);
               }
 
-              // ---------- home page: frame, glass, frame background ----------
+              // ---------- home page: frame, 3D, frame background, run apps ----------
               View homeSetPage(int fg) {
                   LinearLayout r = vbox();
                   r.addView(topBar(t("صفحه خانگی", "Home Page"), fg));
@@ -4595,20 +4554,25 @@ jobs:
                       sp.edit().putBoolean("hfOn", !on).apply();
                       show();
                   }));
-                  // replaces the old "3D" option
-                  final boolean gl = sp.getBoolean("hfGlass", false);
-                  r.addView(row(0xFF26C6DA, "◇", t("شیشه‌ای بلوری", "Frosted glass"),
-                          t("کادر صفحه خانگی مثل کادرهای منوی تنظیمات شیشه‌ای بلوری می‌شود",
-                                  "The home page frame becomes frosted glass like the settings boxes"),
-                          gl ? 3 : 2, fg, v -> {
-                      sp.edit().putBoolean("hfGlass", !gl).apply();
+                  final boolean d3 = sp.getBoolean("hf3d", false);
+                  r.addView(row(0xFF26A69A, "◈", t("سه بعدی", "3D"),
+                          t("لبه‌های کادر به شکل سه بعدی", "Frame edges look 3D"),
+                          d3 ? 3 : 2, fg, v -> {
+                      sp.edit().putBoolean("hf3d", !d3).apply();
                       show();
                   }));
-                  r.addView(accordionRow(0xFF42A5F5, "💧", t("مقدار شیشه‌ای بلوری", "Frosted glass amount"),
-                          "hfLvl", 0, 100, 30, "%", fg, null));
                   r.addView(row(0xFFFF7043, "🖼", t("پس‌زمینه کادر", "Frame background"),
                           t("رنگ، شفافیت و عکس کادر", "Color, transparency and picture of the frame"), 0, fg,
                           v -> { page = HFBG; show(); }));
+                  // apps open as a window over the frame (needs free-form windows on the phone)
+                  final boolean run = sp.getBoolean("hfRun", false);
+                  r.addView(row(0xFF43A047, "▶", t("اجرای اپلیکیشن", "Run apps"),
+                          t("برنامه‌ها با انیمیشن و به اندازه کادر صفحه اصلی باز می‌شوند (نیاز به پنجره آزاد / Freeform در گوشی)",
+                                  "Apps open over the home frame with an animation (needs free-form windows on the phone)"),
+                          run ? 3 : 2, fg, v -> {
+                      sp.edit().putBoolean("hfRun", !run).apply();
+                      show();
+                  }));
                   return wrapScroll(r);
               }
 
@@ -4794,8 +4758,10 @@ jobs:
               // the main Background option only changes the home page
               View bgPage(final int fg) { return bgPageG(0, fg); }
 
+              // mode 0 = home page, 1 = settings menu, 2 = home frame, 3 = top settings frame
               int curColor(int mode) {
-                  return mode == 0 ? bg : (mode == 1 ? mbg() : sp.getInt("hfBg", 0x6628282C));
+                  return mode == 0 ? bg : (mode == 1 ? mbg()
+                          : (mode == 2 ? sp.getInt("hfBg", 0x6628282C) : sp.getInt("topBoxBg", 0x6628282C)));
               }
 
               // a picture setting changed (slider released)
@@ -4819,9 +4785,12 @@ jobs:
                       sp.edit().putInt("mBg", c).putBoolean("mImg", false).apply();
                       mbgSrc = null;
                       mbgBmp = null;
-                  } else {
+                  } else if (mode == 2) {
                       sp.edit().putInt("hfBg", c).putBoolean("hfImg", false).apply();
                       hfSrc = null;
+                  } else {
+                      sp.edit().putInt("topBoxBg", c).putBoolean("tbImg", false).apply();
+                      tbSrc = null;
                   }
                   show();
               }
@@ -4834,9 +4803,13 @@ jobs:
                       mbgSrc = null;
                       mbgBmp = null;
                       show();
-                  } else {
+                  } else if (mode == 2) {
                       sp.edit().putBoolean("hfImg", false).apply();
                       hfSrc = null;
+                      show();
+                  } else {
+                      sp.edit().putBoolean("tbImg", false).apply();
+                      tbSrc = null;
                       show();
                   }
               }
@@ -4850,16 +4823,19 @@ jobs:
                   et.setBackground(boxBg(light() ? 0x14000000 : 0x1AFFFFFF, BOX_R));
               }
 
-              // mode 0 = home page background, 1 = settings menu color, 2 = home frame background
+              // mode 0 = home page background, 1 = settings menu color, 2 = home frame background, 3 = top settings frame
               View bgPageG(final int mode, final int fg) {
-                  final String pre = mode == 0 ? "bg" : (mode == 1 ? "m" : "hf");
-                  final int req = mode == 0 ? REQ_IMG : (mode == 1 ? REQ_MIMG : REQ_FIMG);
+                  final String pre = mode == 0 ? "bg" : (mode == 1 ? "m" : (mode == 2 ? "hf" : "tb"));
+                  final int req = mode == 0 ? REQ_IMG : (mode == 1 ? REQ_MIMG : (mode == 2 ? REQ_FIMG : REQ_TIMG));
                   String title = mode == 0 ? t("پس‌زمینه", "Background")
-                          : (mode == 1 ? t("رنگ منو", "Menu color") : t("پس‌زمینه کادر", "Frame background"));
+                          : (mode == 1 ? t("رنگ منو", "Menu color")
+                          : (mode == 2 ? t("پس‌زمینه کادر", "Frame background")
+                          : t("رنگ کادر تنظیمات", "Settings frame color")));
                   LinearLayout p = vbox();
                   p.addView(topBar(title, fg));
 
-                  boolean hasImg = mode == 0 ? bgBmp != null : (mode == 1 ? mbgBmp != null : hfSrc != null);
+                  boolean hasImg = mode == 0 ? bgBmp != null : (mode == 1 ? mbgBmp != null
+                          : (mode == 2 ? hfSrc != null : tbSrc != null));
                   p.addView(row(0xFF26A69A, "🖼", t("عکس پس‌زمینه", "Background image"),
                           hasImg ? t("فعال", "Active") : t("انتخاب عکس از گالری", "Pick a photo from the gallery"),
                           0, fg, v -> pickImg(req)));
@@ -5154,6 +5130,7 @@ jobs:
                   }
                   if (sp.getBoolean("hfImg", false)) putFile(root, "hf", "hf_src.jpg");
                   if (sp.getBoolean("mImg", false)) putFile(root, "menu", "menu_src.jpg");
+                  if (sp.getBoolean("tbImg", false)) putFile(root, "tb", "tb_src.jpg");
                   return root.toString();
               }
 
@@ -5207,6 +5184,7 @@ jobs:
                       }
                       getFile(root, "hf", "hf_src.jpg");
                       getFile(root, "menu", "menu_src.jpg");
+                      getFile(root, "tb", "tb_src.jpg");
                       // reload everything from the restored settings
                       fa = sp.getString("lang", "fa").equals("fa");
                       bg = sp.getInt("bg", colors[0]);
@@ -5218,10 +5196,8 @@ jobs:
                       loadDock();
                       fixDocked();
                       faceCache.clear();
-                      blurHome.clear();
-                      blurMenu.clear();
-                      blurHomeSrc = null;
-                      blurMenuSrc = null;
+                      mbgBlur = null;
+                      mbgBlurSrc = null;
                       dockPage1 = 0;
                       sel.clear();
                       openFolder = null;
