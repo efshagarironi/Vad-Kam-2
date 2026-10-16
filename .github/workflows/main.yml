@@ -85,8 +85,8 @@ jobs:
                   applicationId "com.vadlan"
                   minSdk 26
                   targetSdk 34
-                  versionCode 21
-                  versionName "21.0"
+                  versionCode 24
+                  versionName "24.0"
               }
           }
           tasks.withType(JavaCompile) { options.encoding = 'UTF-8' }
@@ -2382,6 +2382,17 @@ jobs:
                   if (openFolder != null && !animFolder) {
                       gv.setAlpha(1f - sp.getInt("fpDim", 25) / 100f);
                       if (frameV != null) frameV.setAlpha(1f - sp.getInt("fpDim", 25) / 100f);
+                  } else if (openFolder != null && snapPanel != null) {
+                      // switching from one open folder to another: the page is already in its dimmed state, so nothing flashes
+                      boolean ff = sp.getInt("fpAlpha", 80) >= 100;
+                      float de = ff ? 0f : 1f - sp.getInt("fpDim", 25) / 100f;
+                      gv.setAlpha(de);
+                      if (frameV != null) frameV.setAlpha(de);
+                      if (ff && !sp.getBoolean("fpFull", false)) {
+                          head.setAlpha(0f);
+                          dockBox.setAlpha(0f);
+                          if (topLineV != null) topLineV.setAlpha(0f);
+                      }
                   }
                   FrameLayout.LayoutParams gvp = new FrameLayout.LayoutParams(-1, -1);
                   if (framed) {
@@ -3021,7 +3032,16 @@ jobs:
                       views.add(c);
                   }
                   LinearLayout rowsBox = buildRows(views, cols, cellH, rowGapPx);
-                  rowsBox.setPadding(0, dp(12) + (fadeTop ? dres + fadeLen : 0), 0, dp(44) + (fadeTop ? 0 : dres));
+                  // the first row moves away from / toward the top frame line by the same amount as the rows below it
+                  int firstTop = dp(12) + rowGapPx;
+                  int firstNeg = 0;
+                  if (firstTop < 0) { firstNeg = firstTop; firstTop = 0; }
+                  rowsBox.setPadding(0, firstTop + (fadeTop ? dres + fadeLen : 0), 0, dp(44) + (fadeTop ? 0 : dres));
+                  rowsBox.setClipChildren(false);
+                  col.setClipChildren(false);
+                  if (firstNeg < 0 && rowsBox.getChildCount() > 0) {
+                      ((LinearLayout.LayoutParams) rowsBox.getChildAt(0).getLayoutParams()).topMargin = firstNeg;
+                  }
                   col.addView(rowsBox, new LinearLayout.LayoutParams(-1, -2));
                   if (views.isEmpty()) {
                       TextView e = new TextView(this);
@@ -3343,6 +3363,36 @@ jobs:
                           }
                       }
                   }
+                  endDropCleanup();
+                  saveHome();
+                  saveDock();
+                  postShow();
+              }
+
+              // drop on an app inside the open folder: the dropped app takes the place of that app, which moves one step aside
+              void dropInFolder(Item f, String payload, String target) {
+                  List<String> ap = new ArrayList<>();
+                  for (String k : keysFor(payload)) {
+                      if (!k.startsWith("app:")) continue;
+                      String p = k.substring(4);
+                      if (!p.equals(target) && !ap.contains(p)) ap.add(p);
+                  }
+                  if (ap.isEmpty()) {
+                      // dropped on itself: nothing changes, the selection stays
+                      dragKeys.clear();
+                      dragFromDock = false;
+                      dragFromFolder = false;
+                      return;
+                  }
+                  int at = f.apps.indexOf(target);
+                  for (final String p : ap) {
+                      if (selDock.contains(p)) removeFromDocks(p);
+                      for (Item it : home) if (it.folder) it.apps.remove(p);
+                      home.removeIf(q -> !q.folder && p.equals(q.pkg));
+                  }
+                  if (at < 0) at = f.apps.size();
+                  at = Math.max(0, Math.min(at, f.apps.size()));
+                  f.apps.addAll(at, ap);
                   endDropCleanup();
                   saveHome();
                   saveDock();
@@ -3995,9 +4045,25 @@ jobs:
                               return true;
                           });
                           c.setOnDragListener((w, ev) -> {
-                              if (ev.getAction() == DragEvent.ACTION_DRAG_ENDED && !ev.getResult()
-                                      && ("app:" + pkg).equals(ev.getLocalState())) {
-                                  removeFromFolderDialog(f, pkg);
+                              switch (ev.getAction()) {
+                                  case DragEvent.ACTION_DRAG_STARTED:
+                                      return true;
+                                  case DragEvent.ACTION_DRAG_ENTERED:
+                                      w.setAlpha(0.55f);
+                                      return true;
+                                  case DragEvent.ACTION_DRAG_EXITED:
+                                      w.setAlpha(1f);
+                                      return true;
+                                  case DragEvent.ACTION_DRAG_ENDED:
+                                      w.setAlpha(1f);
+                                      if (!ev.getResult() && ("app:" + pkg).equals(ev.getLocalState())) {
+                                          removeFromFolderDialog(f, pkg);
+                                      }
+                                      return true;
+                                  case DragEvent.ACTION_DROP:
+                                      w.setAlpha(1f);
+                                      dropInFolder(f, ev.getClipData().getItemAt(0).getText().toString(), pkg);
+                                      return true;
                               }
                               return true;
                           });
@@ -4183,6 +4249,10 @@ jobs:
                       if (anim) {
                           ap.accept(0f);
                           if (!xfade) panel.setAlpha(1f);
+                          if (switching) {
+                              if (gridView != null) gridView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
+                              if (frameV != null) frameV.setLayerType(View.LAYER_TYPE_HARDWARE, null);
+                          }
                           ValueAnimator va = ValueAnimator.ofFloat(0f, 1f);
                           va.setDuration(xfade ? 260 : 290);
                           va.setInterpolator(xfade ? new AccelerateDecelerateInterpolator()
@@ -4192,6 +4262,8 @@ jobs:
                               @Override
                               public void onAnimationEnd(Animator an2) {
                                   opening[0] = false;
+                                  if (gridView != null) gridView.setLayerType(View.LAYER_TYPE_NONE, null);
+                                  if (frameV != null) frameV.setLayerType(View.LAYER_TYPE_NONE, null);
                                   if (gPanel != null) wrap.removeView(gPanel);
                                   if (gTabs != null && ov != null) ov.removeView(gTabs);
                               }
@@ -4455,12 +4527,28 @@ jobs:
                   return new Rect(l[0], l[1], l[0] + v.getWidth(), l[1] + v.getHeight());
               }
 
+              // window size of "Run apps": the home frame, or (second tick) top frame + home frame + dock together
+              Rect runRect() {
+                  Rect f = frameRect();
+                  if (!sp.getBoolean("hfRunAll", false)) return f;
+                  Rect u = f == null ? null : new Rect(f);
+                  View[] vs = {topBoxV != null ? topBoxV : headV, dockBoxV};
+                  for (View v : vs) {
+                      if (v == null || v.getWidth() == 0 || v.getHeight() == 0 || v.getVisibility() != View.VISIBLE) continue;
+                      int[] l = new int[2];
+                      v.getLocationOnScreen(l);
+                      Rect r = new Rect(l[0], l[1], l[0] + v.getWidth(), l[1] + v.getHeight());
+                      if (u == null) u = r; else u.union(r);
+                  }
+                  return u;
+              }
+
               // "Run apps" option: the app opens as a window exactly over the frame, growing from its center.
               // Android only keeps the window inside the frame when the phone has free-form windows on;
               // otherwise the app opens normally and the launcher stays behind it.
               void launchInFrame(Intent li) {
                   try {
-                      Rect r = frameRect();
+                      Rect r = runRect();
                       ActivityOptions o;
                       if (r != null && container != null && container.getWidth() > 0) {
                           int[] cl = new int[2];
@@ -4480,7 +4568,7 @@ jobs:
               void launchApp(String pkg) {
                   Intent li = getPackageManager().getLaunchIntentForPackage(pkg);
                   if (li == null) return;
-                  if (sp.getBoolean("hfRun", false)) {
+                  if (sp.getBoolean("hfRun", false) || sp.getBoolean("hfRunAll", false)) {
                       // the launcher always stays open in this mode
                       launchInFrame(li);
                       return;
@@ -4565,14 +4653,16 @@ jobs:
                           t("رنگ، شفافیت و عکس کادر", "Color, transparency and picture of the frame"), 0, fg,
                           v -> { page = HFBG; show(); }));
                   // apps open as a window over the frame (needs free-form windows on the phone)
-                  final boolean run = sp.getBoolean("hfRun", false);
-                  r.addView(row(0xFF43A047, "▶", t("اجرای اپلیکیشن", "Run apps"),
-                          t("برنامه‌ها با انیمیشن و به اندازه کادر صفحه اصلی باز می‌شوند (نیاز به پنجره آزاد / Freeform در گوشی)",
-                                  "Apps open over the home frame with an animation (needs free-form windows on the phone)"),
-                          run ? 3 : 2, fg, v -> {
-                      sp.edit().putBoolean("hfRun", !run).apply();
-                      show();
-                  }));
+                  // apps open inside the launcher as a window: over the home frame only, or over top frame + home frame + dock
+                  r.addView(accordionGroup(0xFF43A047, "▶", t("اجرای اپلیکیشن", "Run apps"), fg,
+                          toggleRow(0xFF7E57C2, "▣", t("فقط کادر", "Frame only"),
+                                  t("برنامه‌ها داخل لانچر و به اندازه کادر آیکون‌های صفحه خانگی باز می‌شوند (نیاز به پنجره آزاد / Freeform در گوشی)",
+                                          "Apps open inside the launcher, as big as the home icons frame (needs free-form windows on the phone)"),
+                                  "hfRun", false, fg),
+                          toggleRow(0xFF00897B, "▤", t("کادر بالا و دوک", "Top frame and dock"),
+                                  t("برنامه‌ها به اندازه مجموع کادر بالا، کادر آیکون‌های صفحه خانگی و کادر دوک باز می‌شوند",
+                                          "Apps open as big as the top frame, the home icons frame and the dock together"),
+                                  "hfRunAll", false, fg)));
                   return wrapScroll(r);
               }
 
